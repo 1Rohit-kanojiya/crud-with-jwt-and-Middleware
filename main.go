@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,6 +82,7 @@ func (a *TodoAPI) createTodo(w http.ResponseWriter, r *http.Request) {
 	a.nextID++
 	a.mu.Unlock()
 
+	slog.Info("todo created", "request_id", RequestIDFrom(r.Context()), "todo_id", todo.ID)
 	writeJSON(w, http.StatusCreated, todo)
 }
 
@@ -172,6 +175,10 @@ func (a *TodoAPI) deleteTodo(w http.ResponseWriter, r *http.Request) {
 // ---------- 5. ROUTER + SERVER ----------
 
 func main() {
+	// Set up structured logging once. Every slog.Info(...) call now uses this.
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	api := NewTodoAPI()
 
 	mux := http.NewServeMux()
@@ -181,12 +188,23 @@ func main() {
 	mux.HandleFunc("PUT /todos/{id}", api.updateTodo)
 	mux.HandleFunc("DELETE /todos/{id}", api.deleteTodo)
 
+	// TEMPORARY: a route that panics, only to prove Recover works. Remove later.
+	mux.HandleFunc("GET /panic", func(w http.ResponseWriter, r *http.Request) {
+		panic("something went terribly wrong")
+	})
+
+	// Wrap the whole router. First listed = outermost layer.
+	handler := Chain(mux, RequestID, Logging, Recover)
+
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           mux,
+		Handler:           handler, // <-- was "mux" in Step 1
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Println("server listening on http://localhost:8080")
-	log.Fatal(srv.ListenAndServe())
+	slog.Info("server starting", "addr", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil {
+		slog.Error("server stopped", "error", err)
+		os.Exit(1)
+	}
 }
